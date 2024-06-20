@@ -1,9 +1,5 @@
-import React, { PureComponent } from 'react';
-import {
-  StyleSheet,
-  View,
-  Button
-} from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Button, StyleSheet, Alert, TextInput, FlatList, Text, Linking } from 'react-native';
 import {
   initialize,
   startDiscoveringPeers,
@@ -13,277 +9,178 @@ import {
   subscribeOnPeersUpdates,
   connect,
   cancelConnect,
-  createGroup,
-  removeGroup,
-  getAvailablePeers,
-  sendFile,
-  receiveFile,
-  getConnectionInfo,
-  getGroupInfo,
-  receiveMessage,
   sendMessage,
+  receiveMessage,
 } from 'react-native-wifi-p2p';
-import { PermissionsAndroid } from 'react-native';
+import { PermissionsAndroid, Platform } from 'react-native';
 
-type Props = {};
-export default class App extends PureComponent<Props> {
-  peersUpdatesSubscription;
-  connectionInfoUpdatesSubscription;
-  thisDeviceChangedSubscription;
+const App = () => {
+  const [devices, setDevices] = useState([]);
+  const [message, setMessage] = useState('');
+  const [chatMessages, setChatMessages] = useState([]);
 
-  state = {
-    devices: []
-  };
-
-  async componentDidMount() {
+  useEffect(() => {
+    async function requestPermissions() {
       try {
-          await initialize();
-          // since it's required in Android >= 6.0
-          const granted = await PermissionsAndroid.request(
-              PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
-              {
-                  'title': 'Access to wi-fi P2P mode',
-                  'message': 'ACCESS_COARSE_LOCATION'
-              }
-          );
+        const requiredPermissions = Platform.Version >= 33 ? 
+          [PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION, PermissionsAndroid.PERMISSIONS.NEARBY_WIFI_DEVICES] :
+          [PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION, PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION];
 
-          console.log(granted === PermissionsAndroid.RESULTS.GRANTED ? "You can use the p2p mode" : "Permission denied: p2p mode will not work");
+        const granted = await PermissionsAndroid.requestMultiple(requiredPermissions);
+        const permissionsGranted = Object.values(granted).every(status => status === PermissionsAndroid.RESULTS.GRANTED);
 
-          this.peersUpdatesSubscription = subscribeOnPeersUpdates(this.handleNewPeers);
-          this.connectionInfoUpdatesSubscription = subscribeOnConnectionInfoUpdates(this.handleNewInfo);
-          this.thisDeviceChangedSubscription = subscribeOnThisDeviceChanged(this.handleThisDeviceChanged);
-
-          const status = await startDiscoveringPeers();
-          console.log('startDiscoveringPeers status: ', status);
-      } catch (e) {
-          console.error(e);
+        if (permissionsGranted) {
+          console.log("Permissions granted");
+          initP2P();
+        } else {
+          console.log("Permissions denied");
+          Alert.alert('Permissions Denied', 'The app needs location permissions to function correctly.');
+        }
+      } catch (err) {
+        console.warn(err);
       }
-  }
+    }
 
-  componentWillUnmount() {
-    this.peersUpdatesSubscription?.remove();
-    this.connectionInfoUpdatesSubscription?.remove();
-    this.thisDeviceChangedSubscription?.remove();
-  }
+    async function initP2P() {
+      try {
+        await initialize();
+        subscribeOnPeersUpdates(({ devices }) => setDevices(devices));
+        subscribeOnConnectionInfoUpdates(info => console.log('Connection Info Updated:', info));
+        subscribeOnThisDeviceChanged(groupInfo => console.log('Device Changed:', groupInfo));
+        await startDiscoveringPeers();
+      } catch (e) {
+        console.error('Initialization failed:', e);
+      }
+    }
 
-  handleNewInfo = (info) => {
-    console.log('OnConnectionInfoUpdated', info);
+    async function checkLocationEnabled() {
+      const locationEnabled = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
+      if (!locationEnabled) {
+        Alert.alert(
+          'Location Services Disabled',
+          'Please enable location services to use this app.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Enable', onPress: () => Linking.openSettings() }
+          ],
+          { cancelable: false }
+        );
+      } else {
+        requestPermissions();
+      }
+    }
+
+    checkLocationEnabled();
+  }, []);
+
+  const handleConnect = async (deviceAddress) => {
+    try {
+      await connect(deviceAddress);
+      Alert.alert('Connection', 'Successfully connected');
+    } catch (err) {
+      console.error('Connection failed:', err);
+      Alert.alert('Connection failed', 'Unable to connect to the device');
+    }
   };
 
-  handleNewPeers = ({ devices }) => {
-    console.log('OnPeersUpdated', devices);
-    this.setState({ devices: devices });
+  const handleDisconnect = async () => {
+    try {
+      await cancelConnect();
+      Alert.alert('Connection', 'Disconnected');
+    } catch (err) {
+      console.error('Disconnect failed:', err);
+      Alert.alert('Disconnect failed', 'Unable to disconnect');
+    }
   };
 
-  handleThisDeviceChanged = (groupInfo) => {
-      console.log('THIS_DEVICE_CHANGED_ACTION', groupInfo);
+  const handleSendMessage = async () => {
+    try {
+      await sendMessage(message);
+      setChatMessages([...chatMessages, { msg: message, sender: 'me' }]);
+      setMessage('');
+    } catch (error) {
+      console.error('Sending message failed:', error);
+    }
   };
 
-  connectToFirstDevice = () => {
-      console.log('Connect to: ', this.state.devices[0]);
-      connect(this.state.devices[0].deviceAddress)
-          .then(() => console.log('Successfully connected'))
-          .catch(err => console.error('Something gone wrong. Details: ', err));
+  const handleReceiveMessage = async () => {
+    try {
+      const msg = await receiveMessage();
+      setChatMessages([...chatMessages, { msg, sender: 'them' }]);
+    } catch (error) {
+      console.error('Receiving message failed:', error);
+    }
   };
 
-  onCancelConnect = () => {
-      cancelConnect()
-          .then(() => console.log('cancelConnect', 'Connection successfully canceled'))
-          .catch(err => console.error('cancelConnect', 'Something gone wrong. Details: ', err));
-  };
-
-  onCreateGroup = () => {
-      createGroup()
-          .then(() => console.log('Group created successfully!'))
-          .catch(err => console.error('Something gone wrong. Details: ', err));
-  };
-
-  onRemoveGroup = () => {
-      removeGroup()
-          .then(() => console.log('Currently you don\'t belong to group!'))
-          .catch(err => console.error('Something gone wrong. Details: ', err));
-  };
-
-  onStopInvestigation = () => {
-      stopDiscoveringPeers()
-          .then(() => console.log('Stopping of discovering was successful'))
-          .catch(err => console.error(`Something is gone wrong. Maybe your WiFi is disabled? Error details`, err));
-  };
-
-  onStartInvestigate = () => {
-      startDiscoveringPeers()
-          .then(status => console.log('startDiscoveringPeers', `Status of discovering peers: ${status}`))
-          .catch(err => console.error(`Something is gone wrong. Maybe your WiFi is disabled? Error details: ${err}`));
-  };
-
-  onGetAvailableDevices = () => {
-      getAvailablePeers()
-          .then(peers => console.log(peers));
-  };
-
-  onSendFile = () => {
-      //const url = '/storage/sdcard0/Music/Rammstein:Amerika.mp3';
-      const url = '/storage/emulated/0/Music/Bullet For My Valentine:Letting You Go.mp3';
-      PermissionsAndroid.request(
-                  PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE,
-                  {
-                      'title': 'Access to read',
-                      'message': 'READ_EXTERNAL_STORAGE'
-                  }
-              )
-          .then(granted => {
-              if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-                  console.log("You can use the storage")
-              } else {
-                  console.log("Storage permission denied")
-              }
-          })
-          .then(() => {
-              return PermissionsAndroid.request(
-                  PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
-                  {
-                      'title': 'Access to write',
-                      'message': 'WRITE_EXTERNAL_STORAGE'
-                  }
-              )
-          })
-          .then(() => {
-              return sendFile(url)
-                  .then((metaInfo) => console.log('File sent successfully', metaInfo))
-                  .catch(err => console.log('Error while file sending', err));
-          })
-          .catch(err => console.log(err));
-  };
-
-  onReceiveFile = () => {
-      PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE,
-          {
-              'title': 'Access to read',
-              'message': 'READ_EXTERNAL_STORAGE'
-          }
-      )
-          .then(granted => {
-              if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-                  console.log("You can use the storage")
-              } else {
-                  console.log("Storage permission denied")
-              }
-          })
-          .then(() => {
-              return PermissionsAndroid.request(
-                  PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
-                  {
-                      'title': 'Access to write',
-                      'message': 'WRITE_EXTERNAL_STORAGE'
-                  }
-              )
-          })
-          .then(() => {
-              return receiveFile('/storage/emulated/0/Music/', 'BFMV:Letting You Go.mp3')
-                  .then(() => console.log('File received successfully'))
-                  .catch(err => console.log('Error while file receiving', err))
-          })
-          .catch(err => console.log(err));
-  };
-
-  onSendMessage = () => {
-      sendMessage("Hello world!")
-        .then((metaInfo) => console.log('Message sent successfully', metaInfo))
-        .catch(err => console.log('Error while message sending', err));
-  };
-
-  onReceiveMessage = () => {
-      receiveMessage()
-          .then((msg) => console.log('Message received successfully', msg))
-          .catch(err => console.log('Error while message receiving', err))
-  };
-
-  onGetConnectionInfo = () => {
-    getConnectionInfo()
-        .then(info => console.log('getConnectionInfo', info));
-  };
-
-  onGetGroupInfo = () => {
-      getGroupInfo()
-        .then(info => console.log('getGroupInfo', info));
-  };
-
-  render() {
-    return (
-      <View style={styles.container}>
-        <Button
-          title="Connect"
-          onPress={this.connectToFirstDevice}
-        />
-        <Button
-          title="Cancel connect"
-          onPress={this.onCancelConnect}
-        />
-        <Button
-          title="Create group"
-          onPress={this.onCreateGroup}
-        />
-        <Button
-          title="Remove group"
-          onPress={this.onRemoveGroup}
-        />
-        <Button
-          title="Investigate"
-          onPress={this.onStartInvestigate}
-        />
-        <Button
-          title="Prevent Investigation"
-          onPress={this.onStopInvestigation}
-        />
-        <Button
-          title="Get Available Devices"
-          onPress={this.onGetAvailableDevices}
-        />
-        <Button
-          title="Get connection Info"
-          onPress={this.onGetConnectionInfo}
-        />
-        <Button
-          title="Get group info"
-          onPress={this.onGetGroupInfo}
-        />
-        <Button
-          title="Send file"
-          onPress={this.onSendFile}
-        />
-        <Button
-          title="Receive file"
-          onPress={this.onReceiveFile}
-        />
-        <Button
-          title="Send message"
-          onPress={this.onSendMessage}
-        />
-        <Button
-          title="Receive message"
-          onPress={this.onReceiveMessage}
-        />
-      </View>
-    );
-  }
-}
+  return (
+    <View style={styles.container}>
+      <Button title="Start Discovering Peers" onPress={() => startDiscoveringPeers()} />
+      <Button title="Stop Discovering Peers" onPress={() => stopDiscoveringPeers()} />
+      <FlatList
+        data={devices}
+        keyExtractor={(item) => item.deviceAddress}
+        renderItem={({ item }) => (
+          <View style={styles.deviceContainer}>
+            <Text style={{ color: 'blue' }}>{item.deviceName}</Text>
+            <Button title="Connect" onPress={() => handleConnect(item.deviceAddress)} />
+          </View>
+        )}
+      />
+      <Button title="Disconnect" onPress={handleDisconnect} />
+      <TextInput
+        style={styles.input}
+        placeholder="Type your message here"
+        value={message}
+        onChangeText={setMessage}
+      />
+      <Button title="Send Message" onPress={handleSendMessage} />
+      <Button title="Receive Message" onPress={handleReceiveMessage} />
+      <FlatList
+        data={chatMessages}
+        keyExtractor={(_, index) => String(index)}
+        renderItem={({ item }) => (
+          <Text style={item.sender === 'me' ? styles.myMessage : styles.theirMessage}>
+            {item.msg}
+          </Text>
+        )}
+      />
+    </View>
+  );
+};
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    padding: 10,
     backgroundColor: '#F5FCFF',
   },
-  welcome: {
-    fontSize: 20,
-    textAlign: 'center',
-    margin: 10,
+  deviceContainer: {
+    marginVertical: 5,
   },
-  instructions: {
-    textAlign: 'center',
-    color: '#333333',
-    marginBottom: 5,
+  input: {
+    height: 40,
+    width: '100%',
+    borderColor: 'gray',
+    borderWidth: 1,
+    marginBottom: 10,
+    paddingHorizontal: 10,
+  },
+  myMessage: {
+    alignSelf: 'flex-end',
+    margin: 10,
+    backgroundColor: '#DCF8C6',
+    padding: 10,
+    borderRadius: 5,
+  },
+  theirMessage: {
+    alignSelf: 'flex-start',
+    margin: 10,
+    backgroundColor: '#34B7F1',
+    padding: 10,
+    borderRadius: 5,
   },
 });
+
+export default App;
